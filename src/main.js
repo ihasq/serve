@@ -19,6 +19,11 @@ const
 		'.jpg': 'image/jpeg',
 
 		'.txt': 'text/plain',
+	},
+	
+	serveFile = (res, file) => {
+		res.writeHead(200, { 'Content-Type': MIME[extname(file).toLowerCase()] || 'application/octet-stream' });
+		createReadStream(file).pipe(res);
 	}
 ;
 
@@ -31,26 +36,22 @@ createServer(async (req, res) => {
 
     if (!path.startsWith(ROOT)) return res.writeHead(403).end('403 Forbidden');
 
-    const serve = (file) => {
-        res.writeHead(200, { 'Content-Type': MIME[extname(file).toLowerCase()] || 'application/octet-stream' });
-        createReadStream(file).pipe(res);
-    };
 
     try {
-        const stats = await stat(path);
-        if (!stats.isDirectory()) return serve(path);
+        if (!(await stat(path)).isDirectory()) return serveFile(res, path);
 
         const idxPath = join(path, 'index.html');
-        if ((await stat(idxPath).catch(() => ({}))).isFile?.()) return serve(idxPath);
+        if ((await stat(idxPath).catch(() => ({}))).isFile?.()) return serveFile(res, idxPath);
 
         const
-			files = await readdir(path),
-			list = files.map(f => `<li><a href="${join(url, f).replace(/\\/g, '/')}">${f}</a></li>`).join(''),
 			parent = url === '/' ? '' : '<li><a href="..">⬆️ Parent Directory</a></li>'
 		;
         
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(`<!DOCTYPE html><meta charset="utf-8"><h1>📂 ${url}</h1><ul>${parent}${list}</ul>`);
+        res.end(`<!DOCTYPE html><meta charset="utf-8"><h1>📂 ${url}</h1><ul>${parent}${(await readdir(path)).reduce(
+			(acc, value) => `${acc}<li><a href="${join(url, value).replace(/\\/g, '/')}">${value}</a></li>`,
+			""
+		)}</ul>`);
 
 	} catch (e) {
 
