@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import { createServer } from 'node:http';
-import { createReadStream, promises as fs } from 'node:fs';
+import { createReadStream } from 'node:fs';
+import { stat, readdir } from "node:fs/promises";
 import { normalize, join, extname } from 'node:path';
 import { cwd, argv } from 'node:process';
 
 const
-	PORT = Number(process.argv.slice(2)[0] || 3000), ROOT = cwd(),
+	PORT = Number(argv.slice(2)[0] || 3000), ROOT = cwd(),
 	MIME = {
 		'.html': 'text/html',
 		'.css': 'text/css',
@@ -36,14 +37,14 @@ createServer(async (req, res) => {
     };
 
     try {
-        const stats = await fs.stat(path);
+        const stats = await stat(path);
         if (!stats.isDirectory()) return serve(path);
 
         const idxPath = join(path, 'index.html');
-        if ((await fs.stat(idxPath).catch(() => ({}))).isFile?.()) return serve(idxPath);
+        if ((await stat(idxPath).catch(() => ({}))).isFile?.()) return serve(idxPath);
 
         const
-			files = await fs.readdir(path),
+			files = await readdir(path),
 			list = files.map(f => `<li><a href="${join(url, f).replace(/\\/g, '/')}">${f}</a></li>`).join(''),
 			parent = url === '/' ? '' : '<li><a href="..">⬆️ Parent Directory</a></li>'
 		;
