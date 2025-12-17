@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { createServer } from 'node:http';
 import { createReadStream, promises as fs } from 'node:fs';
 import { normalize, join, extname } from 'node:path';

@@ -1,6 +1,6 @@
 {
-  "name": "servz",
-  "version": "0.0.0",
+  "name": "@ihasq/serve",
+  "version": "0.0.2",
   "description": "Very tiny file http server",
   "keywords": [
     "servz"
@@ -16,9 +16,10 @@
   "license": "MIT",
   "author": "ihasq",
   "type": "module",
-  "main": "src/main.ts",
+  "main": "src/main.js",
   "scripts": {
     "dev": "node src/main.js",
     "test": "echo \"Error: no test specified\" && exit 1"
-  }
+  },
+  "bin": "./src/main.js"
 }
