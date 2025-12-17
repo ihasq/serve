@@ -1,17 +1,17 @@
 {
   "name": "@ihasq/serve",
-  "version": "0.0.2",
+  "version": "0.0.",
   "description": "Very tiny file http server",
   "keywords": [
     "servz"
   ],
-  "homepage": "https://github.com/ihasq/servz#readme",
+  "homepage": "https://github.com/ihasq/serve#readme",
   "bugs": {
-    "url": "https://github.com/ihasq/servz/issues"
+    "url": "https://github.com/ihasq/serve/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ihasq/servz.git"
+    "url": "git+https://github.com/ihasq/serve.git"
   },
   "license": "MIT",
   "author": "ihasq",

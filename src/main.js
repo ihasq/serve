@@ -3,10 +3,10 @@
 import { createServer } from 'node:http';
 import { createReadStream, promises as fs } from 'node:fs';
 import { normalize, join, extname } from 'node:path';
-import { cwd } from 'node:process';
+import { cwd, argv } from 'node:process';
 
 const
-	PORT = 3000, ROOT = cwd(),
+	PORT = Number(process.argv.slice(2)[0] || 3000), ROOT = cwd(),
 	MIME = {
 		'.html': 'text/html',
 		'.css': 'text/css',
