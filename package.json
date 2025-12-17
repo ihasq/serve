@@ -1,0 +1,24 @@
+{
+  "name": "servz",
+  "version": "0.0.0",
+  "description": "Very tiny file http server",
+  "keywords": [
+    "servz"
+  ],
+  "homepage": "https://github.com/ihasq/servz#readme",
+  "bugs": {
+    "url": "https://github.com/ihasq/servz/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ihasq/servz.git"
+  },
+  "license": "MIT",
+  "author": "ihasq",
+  "type": "module",
+  "main": "src/main.ts",
+  "scripts": {
+    "dev": "node src/main.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
