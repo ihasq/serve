@@ -11,14 +11,89 @@ const
     PORT = Number(argv.slice(2)[0] || 3000),
     ROOT = cwd(),
     MIME = {
+        // --- テキスト・コード ---
         '.html': 'text/html',
+        '.htm': 'text/html',
         '.css': 'text/css',
         '.js': 'text/javascript',
+        '.mjs': 'text/javascript', // ES Modules
+        '.jsx': 'text/javascript', // Reactなど
+        '.ts': 'video/mp2t',       // ※注意: TypeScript(.ts)ではなくMPEG Transport Streamの場合が多い。TSファイルなら 'application/typescript' だが、通常ブラウザには配信しない
         '.json': 'application/json',
+        '.jsonld': 'application/ld+json',
+        '.map': 'application/json', // Source maps
+        '.txt': 'text/plain',
+        '.csv': 'text/csv',
+        '.xml': 'text/xml', // または application/xml
+        '.md': 'text/markdown',
+        '.webmanifest': 'application/manifest+json', // PWA
+
+        // --- 画像 ---
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
-        '.txt': 'text/plain',
-    };
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon',
+        '.webp': 'image/webp',
+        '.avif': 'image/avif', // 次世代画像フォーマット
+        '.bmp': 'image/bmp',
+        '.tif': 'image/tiff',
+        '.tiff': 'image/tiff',
+
+        // --- フォント (Web Fonts) ---
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+        '.ttf': 'font/ttf',
+        '.otf': 'font/otf',
+        '.eot': 'application/vnd.ms-fontobject',
+
+        // --- 音声 ---
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.ogg': 'audio/ogg',
+        '.m4a': 'audio/mp4',
+        '.aac': 'audio/aac',
+        '.flac': 'audio/flac',
+        '.weba': 'audio/webm',
+        '.mid': 'audio/midi',
+        '.midi': 'audio/midi',
+
+        // --- 動画 ---
+        '.mp4': 'video/mp4',
+        '.webm': 'video/webm',
+        '.ogv': 'video/ogg',
+        '.mov': 'video/quicktime',
+        '.avi': 'video/x-msvideo',
+        '.wmv': 'video/x-ms-wmv',
+        '.flv': 'video/x-flv',
+        '.m3u8': 'application/vnd.apple.mpegurl', // HLS Streaming
+        '.ts': 'video/mp2t', // MPEG Transport Stream
+
+        // --- ドキュメント ---
+        '.pdf': 'application/pdf',
+        '.doc': 'application/msword',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xls': 'application/vnd.ms-excel',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.ppt': 'application/vnd.ms-powerpoint',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        '.rtf': 'application/rtf',
+
+        // --- バイナリ・アーカイブ・その他 ---
+        '.wasm': 'application/wasm', // WebAssembly (重要)
+        '.zip': 'application/zip',
+        '.rar': 'application/x-rar-compressed',
+        '.tar': 'application/x-tar',
+        '.gz': 'application/gzip',
+        '.7z': 'application/x-7z-compressed',
+        '.bin': 'application/octet-stream',
+        '.exe': 'application/octet-stream',
+        '.dmg': 'application/octet-stream',
+        '.iso': 'application/octet-stream',
+        '.img': 'application/octet-stream'
+    }
+;
 
 const serveFile = async (req, res, filePath, stats) => {
     // 1. キャッシュ制御 (304 Not Modified)
