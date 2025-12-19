@@ -1,9 +1,9 @@
 {
   "name": "@ihasq/serve",
-  "version": "0.0.7",
+  "version": "0.0.9",
   "description": "Very tiny file http server",
   "keywords": [
-    "servz"
+    "serve"
   ],
   "homepage": "https://github.com/ihasq/serve#readme",
   "bugs": {
