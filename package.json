@@ -1,6 +1,6 @@
 {
   "name": "@ihasq/serve",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Very tiny file http server",
   "keywords": [
     "serve"

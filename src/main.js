@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 
-import { createServer as createHttpServer, request as httpRequest } from 'node:http';
-import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
+// --- 最適化: スレッドプール設定 (importより前に設定推奨) ---
+// ファイル読み込み等のI/O操作を行うスレッドプールのサイズを拡張
+import { cpus } from 'node:os';
+const numCPUs = cpus().length;
+process.env.UV_THREADPOOL_SIZE = Math.max(4, numCPUs);
+
+import { createServer as createHttpServer, request as httpRequest, Agent as HttpAgent } from 'node:http';
+import { createServer as createHttpsServer, request as httpsRequest, Agent as HttpsAgent } from 'node:https';
 import { createReadStream, readFileSync } from 'node:fs';
 import { stat, opendir, access } from "node:fs/promises";
 import { normalize, join, extname, resolve } from 'node:path';
-import { cwd, argv, platform, exit } from 'node:process';
+import { cwd, argv, platform, exit, stdout } from 'node:process';
 import { pipeline } from 'node:stream';
-import { createGzip, createDeflate } from 'node:zlib';
+import { createGzip, createDeflate, constants as zlibConstants } from 'node:zlib';
 import { exec } from 'node:child_process';
+import cluster from 'node:cluster'; // マルチコア対応用
 
 // --- 設定と引数解析 ---
 
@@ -19,7 +26,7 @@ const conf = {
     root: cwd(),
     cors: false,
     gzip: false,
-    cache: null, // 秒数
+    cache: null, 
     showDir: true,
     autoIndex: true,
     silent: false,
@@ -29,89 +36,43 @@ const conf = {
     key: null,
     username: null,
     password: null,
-    open: false
+    open: false,
+    threads: 'auto' // スレッド数指定用に追加
 };
 
-// 引数解析用の一時変数
 let rootPathCandidate = null;
 
 for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     switch (arg) {
         case '-p':
-        case '--port':
-            conf.port = Number(args[++i]);
-            break;
-        case '-a':
-            conf.host = args[++i];
-            break;
-        case '-d':
-            conf.showDir = args[++i] !== 'false'; // -d false で無効化
-            break;
-        case '-i':
-            conf.autoIndex = args[++i] !== 'false';
-            break;
+        case '--port': conf.port = Number(args[++i]); break;
+        case '-a': conf.host = args[++i]; break;
+        case '-d': conf.showDir = args[++i] !== 'false'; break;
+        case '-i': conf.autoIndex = args[++i] !== 'false'; break;
         case '-g':
-        case '--gzip':
-            conf.gzip = true;
-            break;
-        case '-c':
-            conf.cache = Number(args[++i]);
-            break;
-        case '--cors':
-            conf.cors = true;
-            break;
+        case '--gzip': conf.gzip = true; break;
+        case '-c': conf.cache = Number(args[++i]); break;
+        case '--cors': conf.cors = true; break;
         case '-s':
-        case '--silent':
-            conf.silent = true;
-            break;
+        case '--silent': conf.silent = true; break;
         case '-P':
-        case '--proxy':
-            conf.proxy = args[++i];
-            break;
+        case '--proxy': conf.proxy = args[++i]; break;
         case '-S':
-        case '--ssl':
-            conf.ssl = true;
-            break;
+        case '--ssl': conf.ssl = true; break;
         case '-C':
-        case '--cert':
-            conf.cert = args[++i];
-            break;
+        case '--cert': conf.cert = args[++i]; break;
         case '-K':
-        case '--key':
-            conf.key = args[++i];
-            break;
-        case '--username':
-            conf.username = args[++i];
-            break;
-        case '--password':
-            conf.password = args[++i];
-            break;
+        case '--key': conf.key = args[++i]; break;
+        case '--username': conf.username = args[++i]; break;
+        case '--password': conf.password = args[++i]; break;
         case '-o':
-        case '--open':
-            conf.open = true;
-            break;
+        case '--open': conf.open = true; break;
+        case '-t':
+        case '--threads': conf.threads = args[++i]; break;
         case '-h':
         case '--help':
-            console.log(`
-Usage: http-server [path] [options]
-Options:
-  -p --port       Port to use (defaults to 8080)
-  -a              Address to use (defaults to 0.0.0.0)
-  -d              Show directory listings (default 'true')
-  -i              Display autoIndex (default 'true')
-  -g --gzip       Serve gzip files when possible
-  -c              Cache time (max-age) in seconds
-  --cors          Enable CORS via the "Access-Control-Allow-Origin" header
-  -o --open       Open browser after starting the server
-  -P --proxy      Fallback proxy if the request returns 404
-  -S --ssl        Enable https
-  -C --cert       Path to ssl cert file (default: cert.pem)
-  -K --key        Path to ssl key file (default: key.pem)
-  -s --silent     Suppress log messages from output
-  --username      Username for basic authentication
-  --password      Password for basic authentication
-`);
+            console.log(`Usage: http-server [options]`);
             exit(0);
             break;
         default:
@@ -122,10 +83,6 @@ Options:
     }
 }
 
-// ルートパスの決定ロジック (http-server準拠)
-// 1. 引数があればそれを使用
-// 2. なければ ./public があるか確認して使用
-// 3. なければ ./ (cwd) を使用
 const resolveRoot = async () => {
     if (rootPathCandidate) {
         return resolve(cwd(), rootPathCandidate);
@@ -139,26 +96,24 @@ const resolveRoot = async () => {
     }
 };
 
-// --- サーバー機能の実装 ---
+// --- エージェントの再利用 (Keep-Alive) ---
+const proxyHttpAgent = new HttpAgent({ keepAlive: true, keepAliveMsecs: 5000, maxSockets: Infinity });
+const proxyHttpsAgent = new HttpsAgent({ keepAlive: true, keepAliveMsecs: 5000, maxSockets: Infinity });
 
+// --- MIMEオブジェクト (変更なし) ---
 const MIME = {
-    // テキスト・コード
     '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css',
     '.js': 'text/javascript', '.mjs': 'text/javascript', '.jsx': 'text/javascript',
     '.json': 'application/json', '.jsonld': 'application/ld+json', '.map': 'application/json',
     '.txt': 'text/plain', '.csv': 'text/csv', '.xml': 'text/xml',
     '.md': 'text/markdown', '.webmanifest': 'application/manifest+json',
-    // 画像
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
     '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
     '.webp': 'image/webp', '.avif': 'image/avif',
-    // フォント
     '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
     '.otf': 'font/otf', '.eot': 'application/vnd.ms-fontobject',
-    // バイナリ・その他
     '.wasm': 'application/wasm', '.pdf': 'application/pdf',
     '.zip': 'application/zip', '.mp4': 'video/mp4', '.webm': 'video/webm'
-    // 必要に応じて元のリストから補完してください
 };
 
 const COMPRESSIBLE = new Set([
@@ -167,15 +122,40 @@ const COMPRESSIBLE = new Set([
     'text/markdown', 'image/svg+xml', 'application/manifest+json'
 ]);
 
-// ログ出力
-const log = (req, status, msg = '') => {
-    if (conf.silent) return;
-    const date = new Date().toISOString();
-    const color = status >= 400 ? '\x1b[31m' : (status >= 300 ? '\x1b[33m' : '\x1b[32m');
-    console.log(`[${date}] ${color}${req.method} ${req.url} -> ${status}\x1b[0m ${msg}`);
+// --- 最適化: ログバッファリングシステム ---
+// console.logの同期書き込みによるブロッキングを防ぐ
+const logBuffer = [];
+let cachedDate = new Date().toISOString();
+let lastDateUpdate = Date.now();
+
+const flushLogs = () => {
+    if (logBuffer.length === 0) return;
+    stdout.write(logBuffer.join('\n') + '\n');
+    logBuffer.length = 0;
 };
 
-// プロキシ処理
+// ワーカープロセスでのみタイマーを稼働
+if (!cluster.isPrimary) {
+    setInterval(flushLogs, 1000).unref(); // 1秒ごとに書き出し
+}
+
+const log = (req, status, msg = '') => {
+    if (conf.silent) return;
+    
+    // 日付生成も重いのでキャッシュを更新する方式にする
+    const now = Date.now();
+    if (now - lastDateUpdate > 1000) {
+        cachedDate = new Date().toISOString();
+        lastDateUpdate = now;
+    }
+
+    const color = status >= 400 ? '\x1b[31m' : (status >= 300 ? '\x1b[33m' : '\x1b[32m');
+    const logLine = `[${cachedDate}] ${color}${req.method} ${req.url} -> ${status}\x1b[0m ${msg}`;
+    
+    logBuffer.push(logLine);
+    if (logBuffer.length >= 100) flushLogs(); // バッファがいっぱいになったら即書き出し
+};
+
 const proxyRequest = (req, res) => {
     if (!conf.proxy) {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -184,23 +164,33 @@ const proxyRequest = (req, res) => {
         return;
     }
 
-    const proxyUrl = new URL(req.url, conf.proxy);
+    let proxyUrl;
+    try {
+        proxyUrl = new URL(req.url, conf.proxy);
+    } catch (e) {
+        res.writeHead(400);
+        res.end('Bad Request');
+        return;
+    }
+
+    const isHttps = proxyUrl.protocol === 'https:';
     const options = {
         hostname: proxyUrl.hostname,
         port: proxyUrl.port,
         path: proxyUrl.pathname + proxyUrl.search,
         method: req.method,
-        headers: req.headers
+        headers: req.headers,
+        agent: isHttps ? proxyHttpsAgent : proxyHttpAgent
     };
 
-    const proxyReq = (proxyUrl.protocol === 'https:' ? httpsRequest : httpRequest)(options, (proxyRes) => {
+    const proxyReq = (isHttps ? httpsRequest : httpRequest)(options, (proxyRes) => {
         res.writeHead(proxyRes.statusCode, proxyRes.headers);
         proxyRes.pipe(res);
         log(req, proxyRes.statusCode, `(Proxy to ${conf.proxy})`);
     });
 
     proxyReq.on('error', (e) => {
-        console.error('Proxy Error:', e.message);
+        if (!conf.silent) console.error('Proxy Error:', e.message);
         if (!res.headersSent) {
             res.writeHead(502);
             res.end('Bad Gateway');
@@ -210,16 +200,20 @@ const proxyRequest = (req, res) => {
     req.pipe(proxyReq);
 };
 
+// --- 最適化: 圧縮制限 ---
+const MAX_COMPRESS_SIZE = 5 * 1024 * 1024; // 5MB以上は圧縮しない（CPUブロック防止）
+
 const serveFile = async (req, res, filePath, stats) => {
     const ext = extname(filePath).toLowerCase();
     const contentType = MIME[ext] || 'application/octet-stream';
 
-    // キャッシュ制御
+    // TCP遅延対策
+    req.socket.setNoDelay(true);
+
     let maxAge = 0;
     if (conf.cache !== null) {
-        maxAge = conf.cache; // -c オプション優先
+        maxAge = conf.cache;
     } else {
-        // デフォルト: テキストは0、その他は3600
         const isText = COMPRESSIBLE.has(contentType);
         maxAge = isText ? 0 : 3600;
     }
@@ -244,16 +238,24 @@ const serveFile = async (req, res, filePath, stats) => {
         headers['Access-Control-Allow-Headers'] = 'Origin, X-Requested-With, Content-Type, Accept, Range';
     }
 
-    // 圧縮処理 (-g オプション有効時のみ)
     let transform;
-    if (conf.gzip && COMPRESSIBLE.has(contentType) && stats.size > 1024) {
+    // 圧縮条件: 設定ON && 圧縮可能MIME && サイズが小さすぎず大きすぎない
+    const shouldCompress = conf.gzip && 
+                           COMPRESSIBLE.has(contentType) && 
+                           stats.size > 1024 && 
+                           stats.size < MAX_COMPRESS_SIZE;
+
+    if (shouldCompress) {
         const acceptEncoding = req.headers['accept-encoding'] || '';
+        // 最適化: 圧縮速度を最優先にする（CPU負荷低減）
+        const zlibOpts = { level: zlibConstants.Z_BEST_SPEED };
+        
         if (acceptEncoding.includes('gzip')) {
             headers['Content-Encoding'] = 'gzip';
-            transform = createGzip();
+            transform = createGzip(zlibOpts);
         } else if (acceptEncoding.includes('deflate')) {
             headers['Content-Encoding'] = 'deflate';
-            transform = createDeflate();
+            transform = createDeflate(zlibOpts);
         }
     }
 
@@ -263,17 +265,20 @@ const serveFile = async (req, res, filePath, stats) => {
 
     res.writeHead(200, headers);
     
-    // I/O効率化
-    const readStream = createReadStream(filePath, { highWaterMark: 512 * 1024 });
+    // バッファサイズを少し大きめに設定
+    const readStream = createReadStream(filePath, { highWaterMark: 64 * 1024 });
+
+    const onError = (err) => {
+        if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+            console.error('Stream error:', err);
+        }
+        readStream.destroy();
+    };
 
     if (transform) {
-        pipeline(readStream, transform, res, (err) => {
-            if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') console.error('Pipe error:', err);
-        });
+        pipeline(readStream, transform, res, onError);
     } else {
-        pipeline(readStream, res, (err) => {
-            if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') console.error('Pipe error:', err);
-        });
+        pipeline(readStream, res, onError);
     }
     log(req, 200);
 };
@@ -290,7 +295,7 @@ const serveDirectory = async (res, url, dirPath) => {
     if (url !== '/') res.write('<li><a href="..">⬆️ Parent</a></li>');
 
     try {
-        const dir = await opendir(dirPath, { bufferSize: 64 });
+        const dir = await opendir(dirPath, { bufferSize: 32 });
         const urlPrefix = url.endsWith('/') ? url : url + '/';
 
         for await (const dirent of dir) {
@@ -305,9 +310,7 @@ const serveDirectory = async (res, url, dirPath) => {
 };
 
 const requestHandler = async (req, res, root) => {
-    req.socket.setTimeout(30000);
-
-    // Basic認証
+    // Basic Auth
     if (conf.username && conf.password) {
         const auth = req.headers['authorization'];
         if (!auth) {
@@ -327,8 +330,14 @@ const requestHandler = async (req, res, root) => {
     }
 
     try {
-        const urlObj = new URL(req.url, `http://${req.headers.host}`);
-        const urlPath = decodeURIComponent(urlObj.pathname);
+        let urlPath;
+        try {
+            const urlObj = new URL(req.url, `http://${req.headers.host}`);
+            urlPath = decodeURIComponent(urlObj.pathname);
+        } catch {
+            res.writeHead(400).end('Bad Request');
+            return;
+        }
 
         if (urlPath.indexOf('\0') !== -1) throw new Error('Malicious Path');
         const path = normalize(join(root, urlPath));
@@ -343,7 +352,6 @@ const requestHandler = async (req, res, root) => {
         try {
             stats = await stat(path);
         } catch (e) {
-            // ファイルがない場合はプロキシへ
             return proxyRequest(req, res);
         }
 
@@ -364,48 +372,91 @@ const requestHandler = async (req, res, root) => {
 
     } catch (e) {
         if (!res.headersSent) res.writeHead(500).end('Server Error');
-        console.error(e.message);
+        if (!conf.silent) console.error(e.message);
         log(req, 500);
     }
 };
 
-// メイン処理開始
+// --- メイン処理 (Cluster対応) ---
 (async () => {
     conf.root = await resolveRoot();
-
-    let server;
+    
+    let sslOptions = null;
     if (conf.ssl) {
         try {
-            const options = {
+            sslOptions = {
                 key: readFileSync(conf.key || 'key.pem'),
                 cert: readFileSync(conf.cert || 'cert.pem')
             };
-            server = createHttpsServer(options, (req, res) => requestHandler(req, res, conf.root));
         } catch (e) {
-            console.error('Error starting SSL server. Ensure key/cert files exist or specify with -K/-C.');
-            console.error(e.message);
-            exit(1);
+            if (cluster.isPrimary) {
+                console.error('Error starting SSL server. Ensure key/cert files exist or specify with -K/-C.');
+                console.error(e.message);
+                exit(1);
+            }
         }
-    } else {
-        server = createHttpServer((req, res) => requestHandler(req, res, conf.root));
     }
 
-    server.keepAliveTimeout = 5000;
+    // --- 最適化: クラスタリングロジック ---
+    if (cluster.isPrimary) {
+        // マスタープロセス
+        let forks;
+        if (conf.threads === 'auto') {
+            // CPU数 - 1 (最低1) に設定してOS用のリソースを残す
+            forks = Math.max(1, numCPUs - 1);
+        } else {
+            forks = Number(conf.threads) || 1;
+        }
 
-    server.listen(conf.port, conf.host, () => {
+        console.log(`Starting server with ${forks} workers...`);
+
+        for (let i = 0; i < forks; i++) {
+            cluster.fork();
+        }
+
+        cluster.on('exit', (worker, code, signal) => {
+            if (!conf.silent) console.log(`Worker ${worker.process.pid} died. Restarting...`);
+            cluster.fork();
+        });
+
         const protocol = conf.ssl ? 'https' : 'http';
         const url = `${protocol}://${conf.host}:${conf.port}`;
         
         if (!conf.silent) {
-            console.log(`Starting up http-server, serving ${conf.root}`);
+            console.log(`Serving ${conf.root}`);
             console.log(`Available on:`);
             console.log(`  ${url}`);
-            console.log('Hit CTRL-C to stop the server');
         }
 
         if (conf.open) {
             const cmd = platform === 'win32' ? 'start' : (platform === 'darwin' ? 'open' : 'xdg-open');
             exec(`${cmd} ${url}`);
         }
-    });
+
+    } else {
+        // ワーカープロセス
+        let server;
+        const handler = (req, res) => requestHandler(req, res, conf.root);
+
+        if (conf.ssl) {
+            server = createHttpsServer(sslOptions, handler);
+        } else {
+            server = createHttpServer(handler);
+        }
+
+        // Keep-Alive設定と最大接続数設定（OOM防止）
+        server.keepAliveTimeout = 5000;
+        server.headersTimeout = 6000;
+        server.maxConnections = 10000;
+
+        server.on('error', (err) => {
+            if (err.code === 'EADDRINUSE') {
+                if (!conf.silent) console.error(`Worker ${process.pid} failed to bind port.`);
+            } else {
+                console.error(err);
+            }
+        });
+
+        server.listen(conf.port, conf.host);
+    }
 })();
